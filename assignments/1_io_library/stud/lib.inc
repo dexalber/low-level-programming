@@ -26,6 +26,8 @@
     cmp %1,`\t`
     je %%done
     cmp %1,`\n`
+    je %%done
+    cmp %1,`\r`
     %%done:
 %pop
 %endmacro
@@ -57,8 +59,8 @@ string_length:
 .done:
     ret
 
-; @IN byte *str --  Pointer to null-terminated string.
-; @IN qword uint str_len -- Number of bytes to write.
+; @IN byte *buf --  Pointer to a buffer.
+; @IN qword uint buf_len -- Number of bytes to write.
 ; @OUT qword uint -- Number of bytes written.
 print_string_n: 
     mov rdx,rsi
@@ -86,7 +88,7 @@ string_copy:
     xor rdx,rdx
 .loop:
     mov al,byte[rdi+rdx]
-    mov [rsi+rdx],al
+    mov byte[rsi+rdx],al
     inc rdx
     test al,al
     loopnz .loop
@@ -119,10 +121,8 @@ print_int:
     neg rdi
 ; @IN qword uint
 print_uint:
-    push rbp
-    mov rbp,rsp
+    sub rsp,24
 
-    times 4 push qword 0
     mov r10,10
     mov rax,rdi
     mov rsi,20
@@ -137,13 +137,14 @@ print_uint:
 
     lea rdi,[rsp+rsi]
 
+    ; Since we know how long the string
+    ; is, we don't need to null-terminate it.
     mov r8,20
     sub r8,rsi
     mov rsi,r8
 
     call print_string_n
-    mov rsp,rbp
-    pop rbp
+    add rsp,24
     ret
 
 
@@ -176,9 +177,6 @@ read_word:
     xor rdx,rdx
     ret
 .go:
-    push rbp
-    mov rbp,rsp
-
     push rbx
     push r12
     push r13
@@ -222,14 +220,15 @@ read_word:
     pop r12
     pop rbx
 
-    mov rsp,rbp
-    pop rbp
     ret
 
-; @IN byte* -- null-terminated string
+; @IN byte* -- null-terminated string.
+;              Stops parsing on overflow,
+;              which is not treated as an error.
 ; @OUT qword uint -- result
-; @OUT qword uint -- number of decimal digits in result
+; @OUT qword uint -- length of prefix parsed to yield the result.
 ;                    i.e. floor(log10(result)) + 1
+;                    rdx == 0 indicates a nil result.
 parse_uint:
     xor rax,rax
     xor rdx,rdx
@@ -238,18 +237,18 @@ parse_uint:
     test rdi,rdi
     jz .break
 .loop:
-    xor rcx,rcx
-    ; NOTE: Need prev xor since this doesn't zero-out the rest of rcx
-    mov cl,[rdi+rsi] 
+    movzx rcx,byte[rdi+rsi]
     is_digit cl
     jne .break
     sub rcx,'0'
-    mov r11,rax
     xor rdx,rdx
+    ; detecting overflow
+    mov r11,rax
     mul r10
     test rdx,rdx
     cmovnz rax,r11
     jnz .break
+
     add rax,rcx
     cmovo rax,r11
     jo .break
@@ -264,10 +263,9 @@ parse_uint:
 ; @IN byte* -- null-terminated string
 ; @OUT qword int -- result
 ; @OUT qword uint -- number of bytes consumed to get result
-;                    i.e. is_neg(result) + floor(log10(abs(result))) + 1
+;              i.e. is_neg(result) + floor(log10(abs(result))) + 1
 parse_int:
-    xor rcx,rcx
-    mov cl,[rdi]
+    mov cl,byte[rdi]
     cmp cl,'-'
     jne parse_uint
 
@@ -276,16 +274,20 @@ parse_int:
     ; check if no digits followed '-'
     test rdx,rdx
     jz .done
-    inc rdx
     neg rax
+    js .done
+    ; if it's positive now, there was overflow
+    neg rax
+    ; need to undo the last iteration
+    dec rdx
+    movzx rcx,byte[rdi+rdx]
+    sub rcx,'0'
+    sub rax,rcx
 .done:
+    inc rdx
     ret 
 
 string_equals:
-    xor rax,rax
-    xor rcx,rcx
-    xor rdx,rdx
-.loop:
     mov cl,[rdi]
     cmp cl,[rsi]
     jne .no
@@ -293,10 +295,12 @@ string_equals:
     jz .yes
     inc rdi
     inc rsi
-    jmp .loop
+    jmp string_equals
 .yes:
-    inc rax
+    mov rax,1
+    ret
 .no:
+    xor rax,rax
     ret
     
 
